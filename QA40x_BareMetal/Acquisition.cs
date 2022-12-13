@@ -26,6 +26,15 @@ namespace QA40x_BareMetal
         static SemaphoreSlim AcqSemaphore = new SemaphoreSlim(1);
 
 
+
+        /// <summary>
+        /// Provides an async method for doign the DAC/ADC streaming. You can submit separate buffers for the left and right channels.
+        /// When the acquisition is finished, the AcqResult return value will contain the Left and Right values captured by the ADC
+        /// </summary>
+        /// <param name="ct"></param>
+        /// <param name="leftOut"></param>
+        /// <param name="rightOut"></param>
+        /// <returns></returns>
         static public async Task<AcqResult> DoStreamingAsync(CancellationToken ct, double[] leftOut, double[] rightOut)
         {
             AcqResult r = new AcqResult();
@@ -147,7 +156,8 @@ namespace QA40x_BareMetal
                 }
                 else
                 {
-                    // Cancellation has been requested. At this point there is one buffer in flight
+                    // Cancellation has been requested. At this point there is one buffer in flight. 
+                    // Break out of this loop and handle the rest of the cancellation below.
                     break;
                 }
             }

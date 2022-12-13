@@ -74,6 +74,12 @@ namespace QA40x_BareMetal
         static readonly int RegReadWriteTimeout = 20;
         static readonly int MainI2SReadWriteTimeout = 1000;
 
+        /// <summary>
+        /// Attempts to open the USB connection to a device with the specified VID:PID
+        /// </summary>
+        /// <param name="vid"></param>
+        /// <param name="pid"></param>
+        /// <returns></returns>
         public static bool Open(int vid, int pid)
         {
             Random r = new Random();
@@ -131,6 +137,10 @@ namespace QA40x_BareMetal
             return false;
         }
 
+        /// <summary>
+        /// Closes a USB connection (if it's open)
+        /// </summary>
+        /// <returns></returns>
         static public bool Close()
         {
             try
@@ -203,7 +213,9 @@ namespace QA40x_BareMetal
             byte[] data = new byte[4];
             UInt32 val;
 
-            // Lock so reads (two step USB operation) can't be broken up by writes (single step USB operation)
+            // Lock so reads (two step USB operation) can't be broken up by writes (single step USB operation). We need to 
+            // consider there can be USB writes from the main (UI) thread, and also from the aquisition thread. So, it's 
+            // important to ensure a read doesn't get broken up
             lock (ReadRegLock)
             {
                 try
@@ -273,7 +285,9 @@ namespace QA40x_BareMetal
         }
 
         //
-        // METHODS BELOW MUST BE CALLED FROM A SINGLE THREAD. The code below is simply a wrapper for overlapped IO
+        // METHODS BELOW MUST BE CALLED FROM A SINGLE THREAD. The code below is simply a wrapper for overlapped IO.
+        // Since the data acquistion is exclusively performed its own thread this isn't an issue. The root issue is
+        // that the c# List<AsyncResult> type isn't thread safe. Thus the restriction
         //
 
         static public void InitOverlapped()
@@ -283,7 +297,8 @@ namespace QA40x_BareMetal
         }
 
         /// <summary>
-        /// Submits a buffer to be written and returns immediately
+        /// Submits a buffer to be written and returns immediately. The submitted buffer is 
+        /// copied to a local buffer before returning.
         /// </summary>
         /// <param name="data"></param>
         static public void WriteDataBegin(byte[] data, int offset, int len)
