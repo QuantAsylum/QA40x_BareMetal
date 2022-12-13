@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Text;
 using System.Threading;
@@ -7,8 +8,16 @@ using System.Threading.Tasks;
 
 namespace QA40x_BareMetal
 {
+    class AcqResult
+    {
+        public bool Valid = false;
+        public double[] Left;
+        public double[] Right;
+    }
+
     static class Acquisition
     {
+       
 
         /// <summary>
         /// Tracks whether or not an acq is in process. The count starts at one, and when it goes busy
@@ -17,8 +26,11 @@ namespace QA40x_BareMetal
         static SemaphoreSlim AcqSemaphore = new SemaphoreSlim(1);
 
 
-        static public async Task<bool> DoStreamingAsync(CancellationToken ct)
+        static public async Task<AcqResult> DoStreamingAsync(CancellationToken ct, double[] leftOut, double[] rightOut)
         {
+            AcqResult r = new AcqResult();
+            r.Valid = true;
+
             // Check if acq is already in progress
             if (AcqSemaphore.CurrentCount > 0)
             {
@@ -30,15 +42,17 @@ namespace QA40x_BareMetal
                 {
                     try
                     {
-                        DoStreaming(ct);
+                        r = DoStreaming(ct, leftOut, rightOut);
                     }
                     catch (OperationCanceledException ex)
                     {
-                        // If we cancel an acq, we'll end up here
+                        // If we cancel an acq via the CancellationToken, we'll end up here
+                        r.Valid = false;
                     }
                     catch (Exception ex)
                     {
-                       // Other exception will end up here
+                        // Other exceptions will end up here
+                        r.Valid = false;
                     }
                     finally
                     {
@@ -49,47 +63,41 @@ namespace QA40x_BareMetal
 
                 // Wait for the task above to complete. Note we're on the UI thread here, but the task code above will be running
                 // in another thread. By "awaiting" on the task above, the UI thread blocks here BUT remains active, able to handle
-                // other UI tasks. This is known in C# as the Task-based Asynchronous Pattern
+                // other UI tasks. This is known in C# as the Task-based Asynchronous Pattern in case the syntax is confusing to
+                // a non-c# developer
                 await t;
 
                 // Return true to let the caller know the task succeeded and finished
-                return true;
+                return r;
             }
             else
             {
-                // Acquisition is already in progress. Throw an exception or other. Here, we'll return false
-                // to let the caller know the acquisition couldn't be started
-                return false;
+                // Acquisition is already in progress. 
+                r.Valid = false;
+                return r;
             }
         }
 
-        static void DoStreaming(CancellationToken ct)
+        static AcqResult DoStreaming(CancellationToken ct, double[] leftOut, double[] rightOut)
         {
-            UInt32 bufSize = (UInt32)Math.Pow(2, 12);              // Buffer size of user data. For example, 16384 means user will have 16K left and right double samples. 
-            const double sampleRate = 48000.0;
-            int usbBufSize = (int)Math.Pow(2, 12);  // If bigger than 2^15, then OS USB code will chunk it down into 16K buffers (Windows). So, not much point making larger than 32K. Ubuntu chunks to 16K. 
+            AcqResult r = new AcqResult();
+            r.Valid = true;
+
+            Debug.Assert(leftOut.Length == rightOut.Length, "Out buffers must be the same length");
+
+            Int32 bufSize = leftOut.Length;          // Buffer size of user data. For example, 16384 means user will have 16K left and right double samples. 
+            int usbBufSize = (int)Math.Pow(2, 12);   // If bigger than 2^15, then OS USB code will chunk it down into 16K buffers (Windows). So, not much point making larger than 32K. 
 
 
-            // Buffers containing float data.
-            double[] dataToSendLeft = new double[bufSize];
-            double[] dataToSendRight = new double[bufSize];
-            double[] dataToReceiveLeft;
-            double[] dataToReceiveRight;
-
-
-            // Generate a 1Vrms = 1.41Vp 1 kHz sine on both left and right channels
             // The scale factor converts the volts to dBFS. The max output is 8Vrms = 11.28Vp = 0 dBFS. 
             // The above calcs assume DAC relays set to 18 dBV = 8Vrms full scale
-            double scaleFactor = 1 / (8 * Math.Sqrt(2));
-            double amplitudeVp = 1.41;
-            for (int i = 0; i < bufSize; i++)
-            {
-                dataToSendLeft[i] = scaleFactor * amplitudeVp * Math.Sin(2.0 * Math.PI * 1000.0 * i / sampleRate);
-                dataToSendRight[i] = dataToSendLeft[i];
-            }
+            double scaleFactor = 1.0 / (8.0 * Math.Sqrt(2));
+
+            leftOut = leftOut.ScalarMultiply(scaleFactor);
+            rightOut = rightOut.ScalarMultiply(scaleFactor);
 
             // Convert to byte stream. This will be sent over USB
-            byte[] txData = ToByteStream32(dataToSendLeft, dataToSendRight);
+            byte[] txData = ToByteStream(leftOut, rightOut);
             byte[] rxData = new byte[txData.Length];
 
             // Determine the number of blocks needed
@@ -97,11 +105,11 @@ namespace QA40x_BareMetal
             int remainder = txData.Length - blocks * usbBufSize;
 
             // Verify we have integer number of blocks
-            if (remainder != 0)
+            if (blocks == 0 || remainder != 0)
             {
                 // Error! The bufSize must be an integer multiple of the usbBufSize. For example, a 16K bufSize will have 16K left doubles, and
                 // 16K right doubles. This is 16K * 8 = 128K. The USB buffer size (bytes sent over the wire) can be 32K, 16K, 8K, etc.
-                throw new Exception("bufSize * 8 must be an integer multiple of usbBufSize");
+                throw new Exception("bufSize * 8 must be >= to usbBufSize, and bufSize * 8 must be an integer multiple of usbBufSize");
             }
 
             Usb.InitOverlapped();
@@ -119,7 +127,7 @@ namespace QA40x_BareMetal
             Usb.ReadDataBegin(usbBufSize);
             Usb.ReadDataBegin(usbBufSize);
 
-            // Send out two data writes
+            // Send out two data writes as we begin working our way through the txData buffer
             Usb.WriteDataBegin(txData, 0, usbBufSize);
             Usb.WriteDataBegin(txData, usbBufSize, usbBufSize);
 
@@ -148,6 +156,7 @@ namespace QA40x_BareMetal
             if (ct.IsCancellationRequested)
             {
                 // Here the user has requested cancellation. We know there's a single buffer in flight.
+                r.Valid = false;
 
                 // Stop streaming
                 Usb.WriteRegister(8, 0);
@@ -171,12 +180,16 @@ namespace QA40x_BareMetal
             Usb.WriteRegister(8, 0);
 
             // Note that left and right data is swapped on QA402, QA403, QA404. We do that via arg ordering below.
-            FromByteStream(rxData, out dataToReceiveRight, out dataToReceiveLeft);
+            FromByteStream(rxData, out r.Right, out r.Left);
 
             // Apply scaling scaling factor to map from dBFS to Volts. This is emperically determined for the QA402, but should
             // be fairly tight on unit to unit
-            dataToReceiveLeft = dataToReceiveLeft.Multiply(5.42);
-            dataToReceiveRight = dataToReceiveRight.Multiply(5.42);
+            r.Left = r.Left.ScalarMultiply(5.371);
+            r.Right = r.Right.ScalarMultiply(5.371);
+
+            Console.WriteLine($"Peak Left: {r.Left.Max():0.000}   Peak right: {r.Right.Max():0.000}");
+
+            return r;
         }
 
         /// <summary>
@@ -185,7 +198,7 @@ namespace QA40x_BareMetal
         /// <param name="leftData"></param>
         /// <param name="rightData"></param>
         /// <returns></returns>
-        static public byte[] ToByteStream32(double[] leftData, double[] rightData)
+        static public byte[] ToByteStream(double[] leftData, double[] rightData)
         {
             if (leftData.Length != rightData.Length)
                 throw new InvalidOperationException("Data length must be the same");

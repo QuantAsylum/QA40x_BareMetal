@@ -26,6 +26,7 @@ namespace QA40x_BareMetal
 
         private void button1_Click(object sender, EventArgs e)
         {
+            // VID:PID for QA402
             if (Usb.Open(0x16c0, 0x4e37))
             {
                 Text = "Open";
@@ -38,6 +39,7 @@ namespace QA40x_BareMetal
 
         private void button2_Click(object sender, EventArgs e)
         {
+            // VID:PID for QA403
             if (Usb.Open(0x16c0, 0x4e39))
             {
                 Text = "Open";
@@ -50,6 +52,7 @@ namespace QA40x_BareMetal
 
         private void button3_Click(object sender, EventArgs e)
         {
+            // Close USB connection
             if (Usb.Close())
             {
                 Text = "Closed";
@@ -96,12 +99,19 @@ namespace QA40x_BareMetal
             AcqCancellationToken.Dispose();
             AcqCancellationToken = new CancellationTokenSource();
 
+            // Generate sines. Right channel is 2 kHz, left channel is 1 kHz
+            double[] sineLeft = GenerateSine(32768, Math.Sqrt(2), 1000, 48000);
+            double[] sineRight = GenerateSine(32768, Math.Sqrt(2), 2000, 48000);
+
             // Start an acquisition. Because of the await operator, the UI thread will suspend
             // execution on this code path until the call returns. However, the UI thread will 
             // remain active, meaning it can still respond to all button clicks. If you click the Send/Recv 
             // button quickly, each call will try to start another acq. But only the first will
-            // succeed in starting an acq as long as the acq engine is busy.
-            await Acquisition.DoStreamingAsync(AcqCancellationToken.Token);
+            // succeed in starting an acq as long as the acq engine is busy. The subsequent calls
+            // (when the engine is busy) will return right away
+            //
+            // Note: Left and right DAC outputs are swapped in hardware. Fix by re-ordering args
+            AcqResult r = await Acquisition.DoStreamingAsync(AcqCancellationToken.Token, sineRight, sineLeft);
         }
 
 
@@ -119,21 +129,41 @@ namespace QA40x_BareMetal
 
         private async void button7_Click(object sender, EventArgs e)
         {
+            // Don't allow one-shot to be clicked while looping
             groupBox1.Enabled = false;
+
             CancellationTokenSource cts = new CancellationTokenSource();
             LoopForever = true;
 
             while (LoopForever)
             {
-                await Acquisition.DoStreamingAsync(cts.Token);
+                // Generate sines. Right channel is 2 kHz, left channel is 1 kHz
+                double[] sinLeft = GenerateSine(8192, Math.Sqrt(2), 1000, 48000);
+                double[] sinRight = GenerateSine(8192, Math.Sqrt(2), 2000, 48000);
+                
+                // Left and right DAC are swapped in hardware. Fix by re-ordering args here
+                await Acquisition.DoStreamingAsync(cts.Token, sinRight, sinLeft);
                 await Task.Delay(10);
             }
+
             groupBox1.Enabled = true;
         }
 
         private void button8_Click(object sender, EventArgs e)
         {
             LoopForever = false;
+        }
+
+        private double[] GenerateSine(int length, double ampPkVolts, double freq, double sampleRate)
+        {
+            double[] r = new double[length];
+
+            for (int i=0; i<length; i++)
+            {
+                r[i] = ampPkVolts * Math.Sin(2 * Math.PI * freq * i / sampleRate);
+            }
+
+            return r;
         }
     }
 }

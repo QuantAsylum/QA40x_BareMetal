@@ -15,7 +15,7 @@ namespace QA40x_BareMetal
             return bytes;
         }
 
-        public static double[] Multiply(this double[] data, double scaler)
+        public static double[] ScalarMultiply(this double[] data, double scaler)
         {
             for (int i=0; i<data.Length; i++)
             {
